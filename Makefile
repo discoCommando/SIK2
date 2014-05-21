@@ -1,16 +1,16 @@
-TARGETS	= klient serwer 
+TARGETS	= client server 
 CXX	= g++
 CXXFLAGS=  -std=c++0x -Wall
 
 all: $(TARGETS) 
 
-klient: klient.cpp
+client: client.cpp
 	$(CXX) $(CXXFLAGS) $^ -o $@  -lboost_system -lboost_program_options -lpthread
 
-serwer: serwer.cpp
+server: server.cpp
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lboost_system -lboost_program_options -lpthread
 
 
 .PHONY: clean TARGET
 clean:
-	rm -f serwer klient *.o *~ *.bak
+	rm -f server client *.o *~ *.bak
