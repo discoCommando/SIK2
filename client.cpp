@@ -3,22 +3,25 @@
 
 namespace po = boost::program_options;
 
-const int RETRANSMIT_LIMIT = 10;
+const unsigned int RETRANSMIT_LIMIT = 10;
 
 int main(int argc, char* argv[])
 {
 	try {
 		bool debug = false;
-		int retransmitLimit;
+		unsigned int retransmitLimit;
+		unsigned short port;
 		std::string server = ""; 
 		po::options_description desc("Allowed options");
 		desc.add_options()
 			("help", "produce help message")
-			("debug,d", "debug version")
-			("retransmit_limit,X", po::value<int>(&retransmitLimit)->default_value(RETRANSMIT_LIMIT), 
+			("debug,d", "debug version")	
+			("port,p", po::value<unsigned short>(&port), 
+						"PORT number")
+			("retransmit_limit,X", po::value<unsigned int>(&retransmitLimit)->default_value(RETRANSMIT_LIMIT), 
 						"BUF_LEN value")
 			("server,s", po::value<std::string>(&server), 
-						"BUF_LEN value")
+						"server name or ip REQUIRED")
 			
 		;
 		
@@ -37,7 +40,7 @@ int main(int argc, char* argv[])
 		}
 		
 		if (debug) {
-			std::cout << "server: " << server << "\nretransmit_limit: " << retransmitLimit << "\n";
+			std::cout << "server: " << server << "\nretransmit_limit: " << retransmitLimit <<"\nport: " << port << "\n";
 		}
 
 	}
