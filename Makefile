@@ -1,6 +1,6 @@
 TARGETS	= client server 
 CXX	= g++
-CXXFLAGS=  -std=c++0x -Wall
+CXXFLAGS=  -std=c++11 -Wall 
 
 all: $(TARGETS) 
 
