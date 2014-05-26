@@ -29,13 +29,15 @@ boost::asio::io_service ioService;
 // 	//initUDP();
 // }
 
-Client::Client(boost::asio::ip::basic_resolver_iterator< tcp > endpointTCPIterator, boost::asio::ip::basic_resolver_iterator< udp > endpointUDPIterator):
+Client::Client(boost::asio::ip::basic_resolver_iterator< tcp > &endpointTCPIterator, boost::asio::ip::basic_resolver_iterator< udp > &endpointUDPIterator):
 				mySocket_(ioService),
 				tcpEndpointIterator_(endpointTCPIterator),
-				udpEndpoint_(*endpointUDPIterator),
-				udpSocket_(ioService, udpEndpoint_)
+				udpEndpoint_(endpointUDPIterator->endpoint()),
+				udpSocket_(ioService)
 {
-
+	udpSocket_.open(udp::v4());
+	std:: cout << "endpoint: " << udpEndpoint_ << "\n";
+	initTCP();
 }
 
 
@@ -61,17 +63,25 @@ void Client::receiveClientId()
 {	
 	static Buffer tempBuffer;
 	tempBuffer.assign(0);
+	
+	if (debug)
+	{
+		std::cout << "początek receiveClientId()\n";
+	}
+	
 	mySocket_.async_read_some(
 	boost::asio::buffer(tempBuffer, BUFSIZE),
 	[this](boost::system::error_code ec, std::size_t /*length*/)
 	{
 		if (!ec)
 		{
-			std::cout<< tempBuffer.c_array();
-			if (buffer[0] == 'C')
+			std::cout<< (char*)tempBuffer.c_array();
+			std::stringstream ss;
+			ss << (char*)tempBuffer.c_array();
+			std::string temp;
+			ss >> temp;
+			if (temp == "CLIENT")
 			{
-				std::stringstream ss;
-				ss << tempBuffer.data();
 				ss >> id_;
 				if (debug) 
 				{
@@ -79,6 +89,7 @@ void Client::receiveClientId()
 				}
 				sendUDP(tempBuffer);
 				receiveReport();
+				receiveUDP();
 			}
 			else 
 			{
@@ -102,7 +113,7 @@ void Client::receiveReport()
 	{
 		if (!ec)
 		{
-			std::cout<< buffer.c_array();
+			//std::cout<< (char *)buffer.c_array();
 			receiveReport();
 		}
 		else
@@ -114,8 +125,47 @@ void Client::receiveReport()
 
 void Client::sendUDP(Buffer data)
 {
-	
+	udpSocket_.async_send_to(boost::asio::buffer(data), udpEndpoint_, [this, data](boost::system::error_code ec, std::size_t /*length*/)
+	{
+			if(debug)
+			{
+				std::cout << "data sent by udp to server"  << (char*) data.elems;
+			}
+	});
 }
+
+void Client::receiveUDP()
+{
+	static Buffer tempBuffer;
+	tempBuffer.assign(0);
+	udp::endpoint senderEndpoint;
+	if (debug)
+	{
+		std::cout << "receiveUDP by " << id_ << "\n";
+	}
+	udpSocket_.async_receive_from(boost::asio::buffer(tempBuffer), senderEndpoint,
+								  [&, this](boost::system::error_code ec, std::size_t /*length*/)
+				{
+					if (!ec)
+					{
+						std::cout << "receiveUDP message: "<< (char *)tempBuffer.c_array();
+						if(senderEndpoint == udpEndpoint_){
+							std::cout << "senderEndpoint == udpEndpoint_\n";
+							std::stringstream ss;
+							ss << (char *)tempBuffer.c_array();
+							std::string beggining;
+							ss >> beggining;
+						}
+						receiveUDP();
+					}
+					else
+					{
+						
+					}
+					
+				});
+}
+
 
 bool setValues(int argc, char* argv[])
 {

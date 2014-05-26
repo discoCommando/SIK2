@@ -5,11 +5,11 @@
 
 const unsigned int BUFSIZE = 100;
 
-typedef boost::array<char, BUFSIZE> Buffer;
+typedef boost::array<short, BUFSIZE> Buffer;
 class Client
 {
 public:
-	Client(boost::asio::ip::tcp::resolver::iterator endpointTCPIterator, boost::asio::ip::udp::resolver::iterator endpointUDPIterator);
+	Client(boost::asio::ip::tcp::resolver::iterator &endpointTCPIterator, boost::asio::ip::udp::resolver::iterator &endpointUDPIterator);
 	void initTCP();
 	void receiveClientId();
 	void receiveUDP();

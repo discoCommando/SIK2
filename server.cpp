@@ -1,6 +1,8 @@
 #include <boost/program_options.hpp>
 #include <boost/bind.hpp>
 #include <iostream>
+#include <sstream>
+#include <cstdio>
 
 #include "server.hpp"
 
@@ -14,13 +16,7 @@ const unsigned int TX_INTERVAL = 5;
 
 boost::asio::io_service ioService;
 
-bool debug = false;
-unsigned short port;
-unsigned int fifoSize;
-unsigned int fifoLowWatermark;
-unsigned int fifoHighWatermark;
-unsigned int bufLen;
-unsigned int txInterval;
+
 
 Server::Server(const tcp::endpoint& endpoint, const udp::endpoint& udpEndpoint):
 		acceptor_(ioService, endpoint),
@@ -43,12 +39,12 @@ void Server::acceptClient()
 					
 					if (debug)
 					{
-						std::cout<< "zaakceptowal " << ids_ - 1; 
+						std::cout<< "zaakceptowal " << ids_ - 1 << "\n"; 
 					}
 				}
 				if (debug)
 				{
-					std::cout<< " akceptacja c.d\n";
+					//std::cout<< " akceptacja c.d\n";
 				}
 				
 				acceptClient();
@@ -77,29 +73,33 @@ unsigned int Participant::id() const
 Client::Client(boost::asio::ip::tcp::socket socket, Room& room, unsigned int id):
 			Participant(id),
 			room_(room),
-			socket_(std::move(socket))
+			socket_(std::move(socket)),
+			udpSocket_(&(room_.getUDPSocket()))
 {
-
 }
 
+udp::endpoint Client::getUDPEndpoint()
+{
+	return *udpEndpoint_;
+}
 
-void Client::sendTCP(const char * message)
+void Client::sendTCP(const Buffer message)
 {
 	auto self(shared_from_this());	
 	if (debug)
 	{
-		std::cout << "sendTCP\n";
+		//std::cout << "sendTCP\n";
 	}
 	boost::asio::async_write(socket_,
 	boost::asio::buffer(message,
-		strlen(message)),
+		strlen((char*)message.data())),
 	[this, self](boost::system::error_code ec, std::size_t /*length*/)
 	{
 		if (!ec)
 		{
 			if (debug)
 			{
-				std::cout << "udalo sie sendTCP\n";
+				//std::cout << "udalo sie sendTCP\n";
 			}
 		}
 		else
@@ -127,11 +127,11 @@ void Client::start()
 void Client::receiveTCP()
 {
 	auto self(shared_from_this());
-	boost::array<char, BUFSIZE> buffer;
+	static Buffer buffer;
 	buffer.assign(0);
 	if (debug)
 	{
-		std::cout << "receiveTCP\n";
+		//std::cout << "receiveTCP\n";
 	}
 	socket_.async_read_some(
 			boost::asio::buffer(buffer),
@@ -155,15 +155,51 @@ void Client::initUDP()
 
 }
 
+std::string Client::giveReport()
+{
+	std::stringstream ss;
+	ss <<socket_.remote_endpoint() << " FIFO: 0/0(min.0,max.0)";
+	
+	return ss.str();
+}
 
+void Client::sendUDP(const Buffer message)
+{
+	udpSocket_->async_send_to(boost::asio::buffer(message), *udpEndpoint_, [this, message](boost::system::error_code ec, std::size_t /*length*/)
+	{
+			if(debug)
+			{
+				std::cout << "data sent by udp to client:"  << id_ <<" "<< (char*)message.elems;
+			}
+	});
+}
+
+void Client::setUDPEndpoint(udp::endpoint& endpoint)
+{
+	if(debug) 
+	{
+		std::cout << "setudpendpoint: " << endpoint << "\n";
+	}
+	udpEndpoint_ = &endpoint;
+}
 
 Room::Room(const udp::endpoint& udpEndpoint):
-	udpSocket_(ioService, udpEndpoint)
+	udpSocket_(ioService, udpEndpoint),
+	udpEndpoint_(udpEndpoint)
 {
 	deliverReport();
 	receiveUDP();
 }
 
+const udp::endpoint &Room::getRoomUDPEndpoint()
+{
+	return udpEndpoint_;
+}
+
+udp::socket& Room::getUDPSocket()
+{
+	return udpSocket_;
+}
 
 void Room::deliverReport()
 {
@@ -172,17 +208,33 @@ void Room::deliverReport()
 	
 	if (debug) 
 	{
-		std::cout << "deliver Report, size participants: " << participants_.size() <<"\n";
+		//std::cout << "deliver Report, size participants: " << participants_.size() <<"\n";
 	}
 	reportTimer.expires_at(reportTimer.expires_at() + boost::posix_time::seconds(1)); 
 	reportTimer.async_wait(
 	[this](boost::system::error_code ec){
-		char report[100] = "no siema\n";
+		
+		Buffer report;
+		std::string tempReport;
+		if (!debug) {
+			tempReport = "\n";
+		}
+		else 
+		{
+			tempReport = "\n";
+		}
+		for (auto participant: participants_)
+		{
+			tempReport += participant->giveReport();
+			tempReport += "\n";
+		}
+		std::sprintf((char*)report.elems, "%s", (char *)tempReport.c_str());
+		
 		for (auto participant: participants_)
 		{
 			if (debug)
 			{
-				std::cout << "wysłano raport do " << participant->id() << "\n";
+				//std::cout << "wysłano raport do " << participant->id() << "\n";
 			}
 			participant->sendTCP(report);
 		}
@@ -194,6 +246,11 @@ void Room::deliverReport()
 void Room::join(std::shared_ptr< Participant > participant)
 {
 	participants_.insert(participant);
+	static Buffer tempBuffer;
+	tempBuffer.assign(0);
+	static std::stringstream ss;
+	std::sprintf((char *)tempBuffer.elems, "CLIENT %u\n", participant->id());
+	participant->sendTCP(tempBuffer);
 	if(debug)
 		std::cout << "participant " << participant->id()<< " joined room, participants size:" << participants_.size() << "\n";
 // 	for (auto msg: recent_msgs_)
@@ -208,7 +265,63 @@ void Room::leave(std::shared_ptr< Participant > participant)
 }
 
 
-void Room::handleClientID(unsigned int clientId)
+void Room::handleClientID(const Buffer buffer, udp::endpoint& endpoint)
+{
+	std::stringstream ss;
+	ss << (char *)buffer.data();
+	unsigned int id;
+	std::string temp;
+	ss >> temp >> id;
+	if (debug)
+	{
+		std::cout << "handleClientID " << id << "\n";
+	}
+	for (auto participant: participants_)
+	{
+		if (participant->id() == id)
+		{
+			participant->setUDPEndpoint(endpoint);
+			
+		}
+	}
+	
+	sendUDP(id);
+	
+}
+
+void Room::sendUDP(unsigned int id)
+{
+	Buffer buf;
+	std::string temp1 = "UDPENDPOINT ACTIVATED\n";
+	std::sprintf((char*)buf.elems, "%s", temp1.c_str());
+	if(debug)
+				{
+					std::cout << "data sent by udp to client:"  << id <<" "<< (char*)buf.elems;
+				}
+	for (auto participant: participants_)
+	{
+		if (participant->id() == id)
+		{
+			if(debug)
+			{
+				std::cout << participant->getUDPEndpoint() << "\n";
+			}
+			udpSocket_.async_send_to(boost::asio::buffer(buf), participant->getUDPEndpoint(), [&, this](boost::system::error_code ec, std::size_t /*length*/)
+			{
+				
+			});
+		}
+	}
+	
+}
+
+
+void Room::handleAck(const Buffer buffer)
+{
+
+}
+
+void Room::handleUpload(const Buffer buffer)
 {
 
 }
@@ -218,13 +331,38 @@ void Room::receiveUDP()
 {
 	static Buffer tempBuffer;
 	tempBuffer.assign(0);
-	udp::endpoint senderEndpoint;
-	udpSocket_.async_receive_from(boost::asio::buffer(tempBuffer), senderEndpoint,
-								  [this](boost::system::error_code ec, std::size_t /*length*/)
+	if (debug) 
+	{
+		std::cout << "receiveUDP\n";
+	}
+	udpSocket_.async_receive_from(boost::asio::buffer(tempBuffer), tempUDPEndpoint_,
+								  [&, this](boost::system::error_code ec, std::size_t /*length*/)
 				{
 					if (!ec)
 					{
-						std::cout << tempBuffer.c_array();
+						if (tempUDPEndpoint_ != udpEndpoint_){
+							std::cout << "receiveUDP message: "<< (char*)tempBuffer.c_array();
+							std::stringstream ss;
+							ss << (char*)tempBuffer.c_array();
+							std::string beggining;
+							ss >> beggining;
+							if (beggining == "CLIENT")
+							{
+								handleClientID(tempBuffer, tempUDPEndpoint_);
+							}
+							else if (beggining == "UPLOAD")
+							{
+								handleUpload(tempBuffer);
+							}
+							else if (beggining == "ACK")
+							{
+								
+							}
+						} else 
+						{
+							std::cout << "senderEndpoint == udpEndpoint_\n";
+						}
+						receiveUDP();
 					}
 					else
 					{
