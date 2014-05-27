@@ -7,7 +7,7 @@ all: $(TARGETS)
 client: client.cpp
 	$(CXX) $(CXXFLAGS) $^ -o $@  -lboost_system -lboost_program_options -lpthread
 
-server: server.cpp
+server: server.cpp mixer.cpp
 	$(CXX) $(CXXFLAGS) $^ -o $@ -lboost_system -lboost_program_options -lpthread
 
 

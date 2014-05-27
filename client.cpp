@@ -5,8 +5,6 @@
 #include "client.hpp"
 
 
-
-
 namespace po = boost::program_options;
 using boost::asio::ip::tcp;
 using boost::asio::ip::udp;
@@ -33,12 +31,65 @@ Client::Client(boost::asio::ip::basic_resolver_iterator< tcp > &endpointTCPItera
 				mySocket_(ioService),
 				tcpEndpointIterator_(endpointTCPIterator),
 				udpEndpoint_(endpointUDPIterator->endpoint()),
-				udpSocket_(ioService)
+				udpSocket_(ioService),
+				input_(ioService, ::dup(STDIN_FILENO)),
+				output_(ioService, ::dup(STDOUT_FILENO))
 {
 	udpSocket_.open(udp::v4());
 	std:: cout << "endpoint: " << udpEndpoint_ << "\n";
 	initTCP();
+	std::sprintf((char*)KEEPALIVE.elems, "KEEPALIVE\n");
+	sendKEEPALIVE();
+	readFromCin(10);
 }
+
+void Client::readFromCin(unsigned int howMuch)
+{
+	
+	cinBuffer.assign(0);
+	boost::asio::async_read(input_, boost::asio::buffer(cinBuffer, howMuch),
+				[&, this](boost::system::error_code ec, std::size_t /*length*/)
+				{
+					if (!ec)
+					{
+						writeToCout(cinBuffer);
+					}
+					else
+					{
+					}
+				});
+}
+
+void Client::writeToCout(Buffer buf)
+{
+	boost::asio::async_write(output_, boost::asio::buffer(buf),
+				[&, this](boost::system::error_code ec, std::size_t /*length*/)
+				{
+					if (!ec)
+					{
+						
+					}
+					else
+					{
+					}
+				});
+}
+
+void Client::sendKEEPALIVE()
+{
+	static boost::asio::deadline_timer timer(ioService, boost::posix_time::milliseconds(100));
+	
+	timer.expires_at(timer.expires_at() + boost::posix_time::milliseconds(100)); 
+	timer.async_wait(
+	[this](boost::system::error_code ec){
+		
+		sendUDP(KEEPALIVE);
+		sendKEEPALIVE();
+	});
+	
+	
+}
+
 
 
 void Client::initTCP()
@@ -113,7 +164,7 @@ void Client::receiveReport()
 	{
 		if (!ec)
 		{
-			//std::cout<< (char *)buffer.c_array();
+			//std::cerr<< (char *)buffer.c_array();
 			receiveReport();
 		}
 		else
@@ -129,7 +180,7 @@ void Client::sendUDP(Buffer data)
 	{
 			if(debug)
 			{
-				std::cout << "data sent by udp to server"  << (char*) data.elems;
+				//std::cout << "data sent by udp to server"  << (char*) data.elems;
 			}
 	});
 }
@@ -138,7 +189,7 @@ void Client::receiveUDP()
 {
 	static Buffer tempBuffer;
 	tempBuffer.assign(0);
-	udp::endpoint senderEndpoint;
+	static udp::endpoint senderEndpoint;
 	if (debug)
 	{
 		std::cout << "receiveUDP by " << id_ << "\n";
@@ -148,13 +199,25 @@ void Client::receiveUDP()
 				{
 					if (!ec)
 					{
-						std::cout << "receiveUDP message: "<< (char *)tempBuffer.c_array();
+						if (debug)
+						{
+							std::cout << "receiveUDP message: "<< (char *)tempBuffer.c_array();
+							std::cout << "endpoints: " << senderEndpoint << " udpendpoint: " << udpEndpoint_ << "\n";
+						}
 						if(senderEndpoint == udpEndpoint_){
 							std::cout << "senderEndpoint == udpEndpoint_\n";
 							std::stringstream ss;
 							ss << (char *)tempBuffer.c_array();
 							std::string beggining;
 							ss >> beggining;
+							if (beggining == "DATA")
+							{
+								receiveDATA(tempBuffer);
+							}
+							else if (beggining == "ACK")
+							{
+								receiveACK(tempBuffer);
+							}
 						}
 						receiveUDP();
 					}
@@ -166,6 +229,60 @@ void Client::receiveUDP()
 				});
 }
 
+void Client::receiveACK(Buffer data)
+{
+	static std::stringstream ss;
+	ss << (char*)data.data();
+	static std::string temp;
+	ss >> temp >> ack_ >> win_;
+	sendUPLOAD();
+}
+
+void Client::receiveDATA(Buffer data)
+{
+	static bool first = true;
+	
+	std::stringstream ss;
+	ss << (char*)data.elems;
+	static unsigned int tempNr, tempAck, tempWin;
+	static std::string tempString;
+	ss >> tempString >> tempNr;
+	if (first) 
+	{
+		ss >> ack_ >> win_;
+	}
+	else 
+	{
+		ss >> tempAck >> tempWin;
+	}
+	ss.get(); // gettin \n
+	std::string s((std::istreambuf_iterator<char>(ss.rdbuf())), std::istreambuf_iterator<char>());
+	data.assign(0);
+	std::sprintf((char*)data.elems, "%s", s.c_str());
+	writeToCout(data);
+}
+
+void Client::sendUPLOAD()
+{
+	static Buffer buffer;
+	buffer.assign(0);
+	std::sprintf((char*)buffer.data(), "UPLOAD %u\n", ack_);
+	static Buffer tempBuffer;
+	tempBuffer.assign(0);
+	boost::asio::async_read(input_, boost::asio::buffer(tempBuffer, win_),
+				[&, this](boost::system::error_code ec, std::size_t /*length*/)
+				{
+					if (!ec)
+					{
+						std::sprintf((char*)buffer.elems, "%s%s", (char*)buffer.elems, (char*)tempBuffer.elems);
+						sendUDP(buffer);
+					}
+					else
+					{
+					}
+				});
+
+}
 
 bool setValues(int argc, char* argv[])
 {

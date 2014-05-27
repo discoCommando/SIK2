@@ -3,7 +3,8 @@
 
 #include <boost/asio.hpp>
 #include <set>
-
+#include <vector>
+#include "mixer.hpp"
 
 using boost::asio::ip::tcp;
 using boost::asio::ip::udp;
@@ -30,6 +31,14 @@ public:
 	virtual std::string giveReport() = 0;
 	virtual void setUDPEndpoint(udp::endpoint &endpoint) = 0;
 	virtual udp::endpoint getUDPEndpoint() = 0;
+	virtual unsigned int getFifoActualSize() = 0;
+	virtual unsigned int win() =0;
+	virtual void setWin(unsigned int newWin) = 0;
+	virtual unsigned int ack() = 0;
+	virtual void setAck(unsigned int newAck) = 0;
+	virtual void * getActualInput() = 0;
+	virtual void addData(Buffer &buffer) = 0;
+	virtual void keepAlive() = 0;
 protected:
 	unsigned int id_;
 };
@@ -42,13 +51,16 @@ public:
 	void leave(std::shared_ptr<Participant> participant);
 	void deliverReport();
 	void receiveUDP();
-	void handleClientID(const Buffer buffer, udp::endpoint &endpoint);
-	void handleUpload(const Buffer buffer);
-	void handleAck(const Buffer buffer);
+	void handleClientID(Buffer buffer, udp::endpoint &endpoint);
+	void handleUpload(Buffer buffer, udp::endpoint &endpoint);
+	void handleKeepAlive(Buffer tempBuffer, udp::endpoint &endpoint);
 	void setUDPSocket(udp::endpoint endpoint);
-	void sendUDP(unsigned int id);
+	void sendUDP(unsigned int id, Buffer message);
+	void sendDataToAll();
+	void sendData(Buffer buffer, std::shared_ptr<Participant> participant);
 	const udp::endpoint & getRoomUDPEndpoint();
 	udp::socket & getUDPSocket();
+	
 private:
 	std::set<std::shared_ptr<Participant>> participants_;
 	udp::socket udpSocket_;
@@ -84,11 +96,24 @@ public:
 	std::string giveReport();
 	void setUDPEndpoint(udp::endpoint &endpoint);
 	udp::endpoint getUDPEndpoint();
+	unsigned int getFifoActualSize();
+	unsigned int win();
+	void setWin(unsigned int newWin);
+	unsigned int ack();
+	void setAck(unsigned int newAck);
+	void * getActualInput();
+	void addData(Buffer &buffer);
+	void keepAlive();
 private:
 	Room &room_;
 	tcp::socket socket_;
 	udp::endpoint *udpEndpoint_;
 	udp::socket *udpSocket_;
+	std::vector<short> fifo_;
+	unsigned int win_, ack_;
+	Buffer actualInput;
+	boost::asio::deadline_timer timer;
+	bool isActive; // active -> isActive = true, filling -> isActive = false
 };
 
 #endif 

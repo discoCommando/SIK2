@@ -74,9 +74,24 @@ Client::Client(boost::asio::ip::tcp::socket socket, Room& room, unsigned int id)
 			Participant(id),
 			room_(room),
 			socket_(std::move(socket)),
-			udpSocket_(&(room_.getUDPSocket()))
+			udpSocket_(&(room_.getUDPSocket())),
+			win_(fifoSize),
+			ack_(0),
+			timer(ioService, boost::posix_time::seconds(3)),
+			isActive(false)
 {
+	timer.async_wait(
+	[this](boost::system::error_code ec){
+		room_.leave(shared_from_this());
+	});
+	actualInput.assign(0);
 }
+
+unsigned int Client::getFifoActualSize()
+{
+	return fifo_.size();
+}
+
 
 udp::endpoint Client::getUDPEndpoint()
 {
@@ -183,6 +198,49 @@ void Client::setUDPEndpoint(udp::endpoint& endpoint)
 	udpEndpoint_ = &endpoint;
 }
 
+unsigned int Client::ack()
+{
+	return ack_;
+}
+void Client::setAck(unsigned int newAck)
+{
+	ack_ = newAck;
+}
+void Client::setWin(unsigned int newWin)
+{
+	win_ = newWin;
+}
+unsigned int Client::win()
+{
+	return win_;
+}
+
+void Client::addData(Buffer& buffer)
+{
+	//TODO mutex
+	std::sprintf((char*)actualInput.elems, "%s%s", (char*)actualInput.elems, (char*)buffer.elems);
+	if (!isActive)
+	{
+		if (actualInput.size() >= fifoHighWatermark)
+		{
+			isActive = true;
+		}
+	}
+}
+
+void* Client::getActualInput()
+{
+	return (void *)actualInput.elems;
+}
+
+
+void Client::keepAlive()
+{
+	timer.expires_at(timer.expires_at() + boost::posix_time::milliseconds(1000)); 
+}
+
+
+
 Room::Room(const udp::endpoint& udpEndpoint):
 	udpSocket_(ioService, udpEndpoint),
 	udpEndpoint_(udpEndpoint)
@@ -190,6 +248,38 @@ Room::Room(const udp::endpoint& udpEndpoint):
 	deliverReport();
 	receiveUDP();
 }
+
+void Room::sendData(Buffer buffer, std::shared_ptr< Participant > participant)
+{
+	
+}
+
+void Room::sendDataToAll()
+{
+	static boost::asio::deadline_timer reportTimer(ioService, boost::posix_time::milliseconds(txInterval));
+	
+	reportTimer.expires_at(reportTimer.expires_at() + boost::posix_time::seconds(1)); 
+	reportTimer.async_wait(
+	[this](boost::system::error_code ec){
+		static mixer_input inputs[participants_.size()];
+		for (auto participant: participants_)
+		{
+			mixer_input temp;
+			mixer_input.data = participant->getActualInput();
+			mixer_input.len = participant->getFifoActualSize();
+			inputs[participant->id()] = temp;
+		}
+		static Buffer data;
+		data.assign(0);
+		std::size_t outputSize;
+		mixer(inputs, (void*)data.elems, &outputSize, txInterval);
+		
+		
+	});
+}
+
+
+
 
 const udp::endpoint &Room::getRoomUDPEndpoint()
 {
@@ -281,15 +371,15 @@ void Room::handleClientID(const Buffer buffer, udp::endpoint& endpoint)
 		if (participant->id() == id)
 		{
 			participant->setUDPEndpoint(endpoint);
-			
+			return;
 		}
 	}
 	
-	sendUDP(id);
+	//sendUDP(id);
 	
 }
 
-void Room::sendUDP(unsigned int id)
+void Room::sendUDP(unsigned int id, Buffer message)
 {
 	Buffer buf;
 	std::string temp1 = "UDPENDPOINT ACTIVATED\n";
@@ -306,42 +396,70 @@ void Room::sendUDP(unsigned int id)
 			{
 				std::cout << participant->getUDPEndpoint() << "\n";
 			}
-			udpSocket_.async_send_to(boost::asio::buffer(buf), participant->getUDPEndpoint(), [&, this](boost::system::error_code ec, std::size_t /*length*/)
+			udpSocket_.async_send_to(boost::asio::buffer(message), participant->getUDPEndpoint(), [&, this](boost::system::error_code ec, std::size_t /*length*/)
 			{
 				
 			});
+			return;
 		}
 	}
 	
 }
 
 
-void Room::handleAck(const Buffer buffer)
-{
 
+void Room::handleUpload(Buffer buffer, udp::endpoint &endpoint)
+{
+	
+	for (auto participant: participants_)
+	{
+		if (participant->getUDPEndpoint() == endpoint)
+		{
+			std::stringstream ss;
+			ss << (char*)buffer.elems;
+			static unsigned int tempNr;
+			static std::string tempString;
+			ss >> tempString >> tempNr;
+			
+			participant->setAck(participant->ack() + 1);
+			
+			ss.get(); // gettin \n
+			std::string s((std::istreambuf_iterator<char>(ss.rdbuf())), std::istreambuf_iterator<char>());
+			buffer.assign(0);
+			std::sprintf((char*)buffer.elems, "%s", s.c_str());
+			participant->addData(buffer);
+			return;
+		}
+	}
+	
 }
 
-void Room::handleUpload(const Buffer buffer)
+void Room::handleKeepAlive(Buffer tempBuffer, udp::endpoint& endpoint)
 {
-
+	for (auto participant: participants_)
+	{
+		if(participant->getUDPEndpoint() == endpoint){
+			participant->keepAlive();
+		
+			return;
+		}
+		
+	}
 }
+
 
 
 void Room::receiveUDP()
 {
 	static Buffer tempBuffer;
 	tempBuffer.assign(0);
-	if (debug) 
-	{
-		std::cout << "receiveUDP\n";
-	}
+	
 	udpSocket_.async_receive_from(boost::asio::buffer(tempBuffer), tempUDPEndpoint_,
 								  [&, this](boost::system::error_code ec, std::size_t /*length*/)
 				{
 					if (!ec)
 					{
 						if (tempUDPEndpoint_ != udpEndpoint_){
-							std::cout << "receiveUDP message: "<< (char*)tempBuffer.c_array();
 							std::stringstream ss;
 							ss << (char*)tempBuffer.c_array();
 							std::string beggining;
@@ -352,11 +470,11 @@ void Room::receiveUDP()
 							}
 							else if (beggining == "UPLOAD")
 							{
-								handleUpload(tempBuffer);
+								handleUpload(tempBuffer, tempUDPEndpoint_);
 							}
-							else if (beggining == "ACK")
+							else if (beggining == "KEEPALIVE")
 							{
-								
+								handleKeepAlive(tempBuffer, tempUDPEndpoint_);
 							}
 						} else 
 						{
